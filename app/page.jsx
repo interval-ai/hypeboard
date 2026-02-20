@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
 const C = {
   bg: "#080a0f",
@@ -386,35 +386,55 @@ export default function HypeBoard() {
   const [likedComments, setLikedComments] = useState([]);
   const [form, setForm] = useState({ from: "", to: "", category: CATEGORIES[0], message: "", emoji: "🔥", photo: null });
   const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const submit = () => {
+  const loadRecs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/recognize");
+      const data = await res.json();
+      if (data.recognitions?.length) setRecs(data.recognitions);
+    } catch (e) {}
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    loadRecs();
+    const interval = setInterval(loadRecs, 15000);
+    return () => clearInterval(interval);
+  }, [loadRecs]);
+
+  const submit = async () => {
     if (!form.from || !form.to || !form.message) return;
-    setRecs([{ id: Date.now(), ...form, likes: 0, timestamp: "Just now", comments: [] }, ...recs]);
+    const optimistic = { id: Date.now(), ...form, likes: 0, timestamp: "Just now", comments: [] };
+    setRecs(prev => [optimistic, ...prev]);
     setSubmitted(true);
+    await fetch("/api/recognize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
     setTimeout(() => { setSubmitted(false); setView("feed"); setForm({ from: "", to: "", category: CATEGORIES[0], message: "", emoji: "🔥", photo: null }); }, 2200);
   };
 
-  const like = (id) => {
+  const like = async (id) => {
     if (liked.includes(id)) return;
-    setLiked([...liked, id]);
-    setRecs(recs.map(r => r.id === id ? { ...r, likes: r.likes + 1 } : r));
+    setLiked(prev => [...prev, id]);
+    setRecs(prev => prev.map(r => r.id === id ? { ...r, likes: r.likes + 1 } : r));
+    await fetch("/api/slack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "like", recId: id }) });
   };
 
-  const addComment = (recId, author, text) => {
-    setRecs(recs.map(r => r.id === recId ? {
-      ...r,
-      comments: [...r.comments, { id: Date.now(), author, text, likes: 0, timestamp: "Just now" }]
-    } : r));
+  const addComment = async (recId, author, text) => {
+    const newComment = { id: Date.now(), author, text, likes: 0, timestamp: "Just now" };
+    setRecs(prev => prev.map(r => r.id === recId ? { ...r, comments: [...r.comments, newComment] } : r));
+    await fetch("/api/slack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "comment", recId, author, text }) });
   };
 
-  const likeComment = (recId, commentId) => {
+  const likeComment = async (recId, commentId) => {
     const key = `${recId}-${commentId}`;
     if (likedComments.includes(key)) return;
-    setLikedComments([...likedComments, key]);
-    setRecs(recs.map(r => r.id === recId ? {
-      ...r,
-      comments: r.comments.map(c => c.id === commentId ? { ...c, likes: c.likes + 1 } : c)
-    } : r));
+    setLikedComments(prev => [...prev, key]);
+    setRecs(prev => prev.map(r => r.id === recId ? { ...r, comments: r.comments.map(c => c.id === commentId ? { ...c, likes: c.likes + 1 } : c) } : r));
+    await fetch("/api/slack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "likeComment", recId, commentId }) });
   };
 
   const totalLikes = recs.reduce((a, r) => a + r.likes, 0);
